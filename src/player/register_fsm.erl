@@ -32,8 +32,6 @@
 
 %% gen_fsm callbacks
 -export([init/1,
-    state_name/2,
-    state_name/3,
     handle_event/3,
     handle_sync_event/4,
     handle_info/3,
@@ -50,12 +48,12 @@
 -include("../data_type/npc_profile.hrl").
 
 -type state_name() :: select_lang | input_id | input_gender | input_born_month | input_confirmation | state_name.
--type born_type_info_map() :: #{player_fsm:born_month() => #born_type_info{}}.
+-type born_type_info_map() :: #{player_statem:born_month() => #born_type_info{}}.
 
 -record(state, {
-    self :: #player_profile{},
-    summary_content :: [nls_server:value()],
-    born_type_info_map :: born_type_info_map()
+    self :: #player_profile{} | undefined,
+    summary_content :: [nls_server:value()] | undefined,
+    born_type_info_map :: born_type_info_map() | undefined
 }).
 
 -export_type([
@@ -79,7 +77,7 @@
 %% @end
 %%--------------------------------------------------------------------
 -spec start_link(DispatcherPid, Uid, BornTypeInfoMap) -> gen:start_ret() when
-    Uid :: player_fsm:uid(),
+    Uid :: player_statem:uid(),
     DispatcherPid :: pid(),
     BornTypeInfoMap :: register_fsm:born_type_info_map().
 start_link(DispatcherPid, Uid, BornTypeInfoMap) ->
@@ -92,7 +90,7 @@ start_link(DispatcherPid, Uid, BornTypeInfoMap) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec stop(Uid) -> ok when
-    Uid :: player_fsm:uid().
+    Uid :: player_statem:uid().
 stop(Uid) ->
     gen_fsm:send_all_state_event(register_server_name(Uid), stop).
 
@@ -105,7 +103,7 @@ stop(Uid) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec input(DispatcherPid, Uid, Input) -> ok when
-    Uid :: player_fsm:uid(),
+    Uid :: player_statem:uid(),
     Input :: binary(),
     DispatcherPid :: pid().
 input(DispatcherPid, Uid, Input) ->
@@ -118,7 +116,7 @@ input(DispatcherPid, Uid, Input) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec current_player_profile(Uid) -> CurrentPlayerProfile when
-    Uid :: player_fsm:uid(),
+    Uid :: player_statem:uid(),
     CurrentPlayerProfile :: #player_profile{}.
 current_player_profile(Uid) ->
     gen_fsm:sync_send_all_state_event(register_server_name(Uid), current_player_profile).
@@ -130,7 +128,7 @@ current_player_profile(Uid) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec register_server_name(Uid) -> PlayerServerName when
-    Uid :: player_fsm:uid(),
+    Uid :: player_statem:uid(),
     PlayerServerName :: erlang:registered_name().
 register_server_name(Uid) ->
     list_to_atom(atom_to_list(Uid) ++ "_register_fsm").
@@ -156,7 +154,7 @@ register_server_name(Uid) ->
     {stop, Reason} |
     ignore when
 
-    Uid :: player_fsm:uid(),
+    Uid :: player_statem:uid(),
     DispatcherPid :: pid(),
     BornTypeInfoMap :: register_fsm:born_type_info_map(),
 
@@ -165,7 +163,9 @@ register_server_name(Uid) ->
     StateData :: #state{}.
 init({Uid, DispatcherPid, BornTypeInfoMap}) ->
     State = #state{
-        self = #player_profile{uid = Uid},
+        self = #player_profile{
+            uid = Uid
+        },
         born_type_info_map = BornTypeInfoMap
     },
     nls_server:response_content([{nls, select_lang}], zh, DispatcherPid),
@@ -404,27 +404,33 @@ input_confirmation(
     #state{
         self = #player_profile{
             uid = PlayerUid,
-            born_month = BornMonth
+            born_month = BornMonth,
+            gender = Gender
         } = PlayerProfile,
         born_type_info_map = BornTypeInfoMap
     } = State
 ) when Answer == <<"y">> orelse Answer == <<"yes">> ->
-    #npc_profile{npc_name = NpcName, character_desc = CharacterDescription, self_description = SelfDescription} = common_server:random_npc(),
-
     #born_type_info{
         strength = M_strength,
         defense = M_defense,
         hp = M_hp,
         dexterity = M_dexterity
-    } = BornType = maps:get(BornMonth, BornTypeInfoMap),
+    } = maps:get(BornMonth, BornTypeInfoMap),
+
+    {PlayerName, CharacterDescription, SelfDescription} =
+        case Gender of
+            male ->
+                {{nls, npc_little_boy}, {nls, npc_little_boy_desc}, {nls, self_npc_little_boy_desc}};
+            female ->
+                {{nls, npc_little_girl}, {nls, npc_little_girl_desc}, {nls, self_npc_little_girl_desc}}
+        end,
 
     FinalPlayerProfile = PlayerProfile#player_profile{
-        register_time = cm:timestamp(),
+        register_time = elib:timestamp(),
         scene = ?BORN_SCENE,
-        name = NpcName,
+        name = PlayerName,
         description = CharacterDescription,
         self_description = SelfDescription,
-        born_type = BornType,
         battle_status = #battle_status{
             'Strength' = M_strength,
             'M_Strength' = M_strength,
@@ -473,72 +479,8 @@ input_confirmation(
         summary_content = SummaryContent
     } = State
 ) ->
-    ErrorMessageNlsContent
-        = case Other of
-              <<>> ->
-                  [SummaryContent];
-              _InvalidCommand ->
-                  lists:flatten([{nls, invalid_command}, Other, <<"\n\n">>, SummaryContent])
-          end,
-    nls_server:response_content(ErrorMessageNlsContent, Lang, DispatcherPid),
+    nls_server:response_content(lists:flatten([{nls, invalid_command}, Other, <<"\n\n">>, SummaryContent]), Lang, DispatcherPid),
     {next_state, input_confirmation, State}.
-
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% There should be one instance of this function for each possible
-%% state name. Whenever a gen_fsm receives an event sent using
-%% gen_fsm:send_event/2, the instance of this function with the same
-%% name as the current state name StateName is called to handle
-%% the event. It is also called if a timeout occurs.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec state_name(Event, State) ->
-    {next_state, NextStateName, NextState} |
-    {next_state, NextStateName, NextState, timeout() | hibernate} |
-    {stop, Reason, NewState} when
-
-    Event :: term(), % generic term
-    State :: #state{},
-    NextStateName :: state_name(),
-    NextState :: State,
-    NewState :: State,
-    Reason :: term(). % generic term
-state_name(_Event, State) ->
-    {next_state, state_name, State}.
-
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% There should be one instance of this function for each possible
-%% state name. Whenever a gen_fsm receives an event sent using
-%% gen_fsm:sync_send_event/[2,3], the instance of this function with
-%% the same name as the current state name StateName is called to
-%% handle the event.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec state_name(Event, From, State) ->
-    {next_state, NextStateName, NextState} |
-    {next_state, NextStateName, NextState, timeout() | hibernate} |
-    {reply, Reply, NextStateName, NextState} |
-    {reply, Reply, NextStateName, NextState, timeout() | hibernate} |
-    {stop, Reason, NewState} |
-    {stop, Reason, Reply, NewState} when
-
-    Event :: term(), % generic term
-    Reply :: ok,
-
-    From :: {pid(), term()}, % generic term
-    State :: #state{},
-    NextStateName :: state_name(),
-    NextState :: State,
-    Reason :: normal | term(), % generic term
-    NewState :: State.
-state_name(_Event, _From, State) ->
-    Reply = ok,
-    {reply, Reply, state_name, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -689,7 +631,7 @@ format_status(Opt, StatusData) ->
 %%--------------------------------------------------------------------
 -spec validate_month(MonthBin) -> {ok, Month} | {false, MonthBin} when
     MonthBin :: binary(),
-    Month :: player_fsm:born_month().
+    Month :: player_statem:born_month().
 validate_month(MonthBin) ->
     try
         case binary_to_integer(MonthBin) of
@@ -757,6 +699,6 @@ gen_summary_convert_value(id, Value) ->
 gen_summary_convert_value(_Key, Value) when is_integer(Value) ->
     integer_to_binary(Value);
 gen_summary_convert_value(_Key, Value) when is_atom(Value) ->
-    {nls, Value};
-gen_summary_convert_value(_Key, Value) ->
-    Value.
+    {nls, Value}.
+%%gen_summary_convert_value(_Key, Value) ->
+%%    Value.

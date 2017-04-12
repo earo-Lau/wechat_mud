@@ -4,22 +4,20 @@
 %%% @doc
 %%%
 %%% Scene supervisor. This supervisor starts up scene worker per row
-%%% of scene csv file under priv/scene by scene_sup.erl which the number
+%%% of scene csv file under priv/scene by scene_fsm_sup.erl which the number
 %%% of children configs equals to the number of rows in scene csv file.
 %%%
 %%% @end
 %%% Created : 14. Sep 2015 10:42 PM
 %%%-------------------------------------------------------------------
--module(scene_sup).
+-module(scene_fsm_sup).
 -author("shuieryin").
 
 -behaviour(supervisor).
 
 %% API
 -export([
-    start_link/0,
-    start/0,
-    stop/0
+    start_link/0
 ]).
 
 %% Supervisor callbacks
@@ -34,6 +32,10 @@
 
 -type scene_child() :: {scene_fsm:scene_name(), {scene_fsm, start_link, [#scene_info{}]}, supervisor:restart(), supervisor:shutdown(), supervisor:worker(), [scene_fsm]}.
 
+-export_type([
+    scene_child/0
+]).
+
 %%%===================================================================
 %%% API functions
 %%%===================================================================
@@ -47,26 +49,6 @@
 -spec start_link() -> supervisor:startlink_ret().
 start_link() ->
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Starts the supervisor
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec start() -> supervisor:startlink_ret().
-start() ->
-    gen_server:start({local, ?SERVER}, supervisor, {{local, ?SERVER}, ?MODULE, []}, []).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Stop supervisor.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec stop() -> true.
-stop() ->
-    exit(whereis(?SERVER), normal).
 
 %%%===================================================================
 %%% Supervisor callbacks
@@ -101,7 +83,7 @@ init([]) ->
 %%--------------------------------------------------------------------
 %% @doc
 %% Generates scene worker configs per row of scene csv file under
-%% priv/scene by scene_sup.erl which the number of children configs
+%% priv/scene by scene_fsm_sup.erl which the number of children configs
 %% equals to the number of rows in scene csv file.
 %%
 %% @end
@@ -109,41 +91,5 @@ init([]) ->
 -spec gen_scene_child_list() -> SceneChildList when
     SceneChildList :: [scene_child()].
 gen_scene_child_list() ->
-    Restart = permanent,
-    Shutdown = 2000,
-    Type = worker,
-
-    ChildFun =
-        fun(SceneValues) ->
-            populate_scene_child(SceneValues, Restart, Shutdown, Type)
-        end,
-
-    SceneNlsPath = filename:join(code:priv_dir(cm:app_name()), "scene"),
-    {ok, FileNameList} = file:list_dir(SceneNlsPath),
-    FilePathList = [filename:join(SceneNlsPath, FileName) || FileName <- FileNameList],
-    {ScenesMap, _ChangedScenesMap} = csv_to_object:traverse_merge_files(FilePathList, #{}, #{}, ChildFun),
-    maps:values(ScenesMap).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Generates scene worker configs entry.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec populate_scene_child(SceneValues, Restart, Shutdown, Type) -> SceneChild when
-    SceneValues :: [csv_to_object:value()],
-    Restart :: supervisor:restart(),
-    Shutdown :: supervisor:shutdown(),
-    Type :: supervisor:worker(),
-    SceneChild :: scene_child().
-populate_scene_child([_CityName | SceneValues], Restart, Shutdown, Type) ->
-    [Verify | _RestSceneValues] = SceneValues,
-    case Verify of
-        undefined ->
-            undefined;
-        _Verify ->
-            #scene_info{
-                id = Id
-            } = SceneInfo = list_to_tuple([scene_info | SceneValues]),
-            {Id, {scene_fsm, start_link, [SceneInfo]}, Restart, Shutdown, Type, [scene_fsm]}
-    end.
+    SceneSpecsMap = scene_manager:scene_specs_map(),
+    maps:values(SceneSpecsMap).

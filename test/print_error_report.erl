@@ -4,35 +4,24 @@
 %%% @doc
 %%%
 %%% @end
-%%% Created : 19. Feb 2016 3:56 PM
+%%% Created : 29. Nov 2015 8:09 PM
 %%%-------------------------------------------------------------------
--module(module_sequence).
+-module(print_error_report).
 -author("shuieryin").
 
 %% API
 -export([
-    exec/0
+    do/1
 ]).
+
+-include_lib("wechat_mud_test.hrl").
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Comment starts here
-%%
-%% @end
-%%--------------------------------------------------------------------
-exec() ->
-    case net_kernel:connect_node('wechat_mud@127.0.0.1') of
-        true ->
-            timer:sleep(250),
-            ChildrenSpecs = gen_server:call({global, information_server}, ?MODULE),
-            io:format("~p", [ChildrenSpecs]);
-        _ ->
-            io:format("connect_failed")
-    end.
+do(_Config) ->
+    true. % TODO print error report
 
 %%%===================================================================
 %%% Internal functions (N/A)

@@ -23,8 +23,7 @@
     runtime_data/2,
     runtime_datas/1,
     random_npc/0,
-    start/0,
-    stop/0
+    start/1
 ]).
 
 %% gen_server callbacks
@@ -40,15 +39,16 @@
 
 -define(SERVER, ?MODULE).
 -define(DEFAULT_WECHAT_DEBUG_MODE, true).
+-define(EMPTY_CONTENT, <<>>).
 
 -include("../data_type/npc_profile.hrl").
 
 -record(common_config, {
-    is_wechat_debug :: boolean()
+    is_wechat_debug = false :: boolean()
 }).
 
 -record(state, {
-    common_config :: #common_config{},
+    common_config :: #common_config{} | undefined,
     runtime_datas :: csv_to_object:csv_object()
 }).
 
@@ -68,23 +68,33 @@ start_link() ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Starts server by setting module name as server name without link.
+%% Handle data request.
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec start() -> gen:start_ret().
-start() ->
-    gen_server:start({local, ?SERVER}, ?MODULE, [], []).
+-spec start(Req) -> {Reply, UpdatedReq} when
+    Req :: cowboy_req:req(),
+    Reply :: iodata(),
+    UpdatedReq :: Req.
+start(Req) ->
+    case cowboy_req:qs(Req) of
+        ?EMPTY_CONTENT ->
+            {<<"do_nothing">>, Req};
+        HeaderParams ->
+            #{
+                data_name := DataName
+            } = _ParamsMap = elib:gen_get_params(HeaderParams),
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Stop server.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec stop() -> ok.
-stop() ->
-    gen_server:cast(?SERVER, stop).
+            DataBin
+                = case redis_client_server:get(DataName) of
+                      undefined ->
+                          <<"not_found">>;
+                      RawData ->
+                          RawData
+                  end,
+
+            {DataBin, Req}
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -162,7 +172,7 @@ runtime_data(DataName) ->
 %%--------------------------------------------------------------------
 -spec runtime_data(DataName, RecordName) -> RuntimeRecord when
     DataName :: csv_to_object:key(),
-    RecordName :: DataName,
+    RecordName :: term(), % generic term
     RuntimeRecord :: csv_to_object:csv_row_data().
 runtime_data(DataName, RecordName) ->
     gen_server:call(?MODULE, {runtime_data, [DataName, RecordName]}).
@@ -177,11 +187,11 @@ runtime_data(DataName, RecordName) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec runtime_datas(TargetDataList) -> RuntimeDatas when
-    TargetDataList :: [csv_to_object:csv_data_struct()],
+-spec runtime_datas(TargetDataStruct) -> RuntimeDatas when
+    TargetDataStruct :: [csv_to_object:csv_data_struct()],
     RuntimeDatas :: csv_to_object:csv_object().
-runtime_datas(TargetDataList) ->
-    gen_server:call(?MODULE, {runtime_datas, TargetDataList}).
+runtime_datas(TargetDataStruct) ->
+    gen_server:call(?MODULE, {runtime_datas, TargetDataStruct}).
 
 
 %%--------------------------------------------------------------------
@@ -231,16 +241,16 @@ init([]) ->
                 Config
         end,
 
-    RuntimeFilePath = filename:join(code:priv_dir(cm:app_name()), ?MODULE_STRING),
+    RuntimeFilePath = filename:join(code:priv_dir(elib:app_name()), ?MODULE_STRING),
     {ok, FileNameList} = file:list_dir(RuntimeFilePath),
     FilePathList = [filename:join(RuntimeFilePath, FileName) || FileName <- FileNameList],
-    {RuntimeDatas, _ChangedRuntimeDatas} = csv_to_object:traverse_files(FilePathList, #{}, #{}),
+    {RuntimeDatas, _ChangedRuntimeDatas, _DeletedFilesStruct} = csv_to_object:traverse_files(FilePathList, #{}, #{}),
     State = #state{
         common_config = CommonConfig,
         runtime_datas = RuntimeDatas
     },
 
-    io:format("started~n"),
+    io:format("started~n~n"),
     {ok, State}.
 
 %%--------------------------------------------------------------------
@@ -262,7 +272,7 @@ init([]) ->
     is_wechat_debug |
     {set_wechat_debug, IsWechatDebug} |
     {runtime_data, Phases} |
-    {runtime_datas, TargetDataList},
+    {runtime_datas, TargetDataStruct},
 
     Reply ::
     IsWechatDebug |
@@ -272,7 +282,7 @@ init([]) ->
     IsWechatDebug :: boolean(),
     TargetRuntimeData :: csv_to_object:csv_data(),
     Phases :: [csv_to_object:key()],
-    TargetDataList :: [csv_to_object:csv_data_struct()],
+    TargetDataStruct :: [csv_to_object:csv_data_struct()],
     RuntimeDatas :: csv_to_object:csv_object(),
 
     From :: {pid(), Tag :: term()}, % generic term
@@ -283,12 +293,18 @@ handle_call(
     is_wechat_debug,
     _From,
     #state{
-        common_config = #common_config{
-            is_wechat_debug = IsWechatDebug
-        }
+        common_config = CommonConfig
     } = State
 ) ->
-    {reply, IsWechatDebug, State};
+    Reply = case CommonConfig of
+                undefined ->
+                    false;
+                #common_config{
+                    is_wechat_debug = IsWechatDebug
+                } ->
+                    IsWechatDebug
+            end,
+    {reply, Reply, State};
 handle_call(
     {set_wechat_debug, IsWechatDebug},
     _From,
@@ -310,21 +326,8 @@ handle_call(
 ) ->
     TargetRuntimeData = grab_runtime_data(Phases, RuntimeDatasMap),
     {reply, TargetRuntimeData, State};
-handle_call(
-    {runtime_datas, TargetDataList},
-    _From,
-    #state{
-        runtime_datas = RuntimeDatasMap
-    } = State
-) ->
-    TargetRuntimeDataMap = lists:foldl(
-        fun({DataKey, RecordKeys}, AccTargetRuntimeDataMap) ->
-            DataMap = maps:get(DataKey, RuntimeDatasMap),
-            AccTargetRuntimeDataMap#{
-                DataKey => maps:with(RecordKeys, DataMap)
-            }
-        end, #{}, TargetDataList),
-    {reply, TargetRuntimeDataMap, State};
+handle_call({runtime_datas, TargetDataStruct}, _From, State) ->
+    {reply, grab_runtime_datas(State, TargetDataStruct), State};
 handle_call(
     random_npc,
     _From,
@@ -334,7 +337,7 @@ handle_call(
         }
     } = State
 ) ->
-    RandomKey = cm:random_from_list(maps:keys(NpcsRuntimeDataMap)),
+    RandomKey = elib:random_from_list(maps:keys(NpcsRuntimeDataMap)),
     #{RandomKey := RandomNpc} = NpcsRuntimeDataMap,
     {reply, RandomNpc, State}.
 
@@ -431,17 +434,17 @@ code_change(
                         RemoveNotUsedData = maps:without(DeletedFileNames, OldRuntimeDatas),
 
                         ReloadFilePaths = AddedFilePaths ++ ModifiedFilePaths, % number of add files is usually less than modified files
-                        {NewRuntimeDatas, ChangedFilesMap} = csv_to_object:traverse_files(ReloadFilePaths, RemoveNotUsedData, #{}),
+                        {NewRuntimeDatas, ChangedFilesMap, DeletedFilesStruct} = csv_to_object:traverse_files(ReloadFilePaths, RemoveNotUsedData, #{}),
                         error_logger:info_msg("~p~n============changed data~n~tp~n", [?MODULE_STRING, ChangedFilesMap]),
 
-                        ChangedList = maps:fold(
+                        ChangedFilesStruct = maps:fold(
                             fun(FileName, ValuesMap, AccChangedList) ->
                                 [{FileName, maps:keys(ValuesMap)} | AccChangedList]
                             end, [], ChangedFilesMap),
 
                         ok = gb_sets:fold(
                             fun(PlayerUid, ok) ->
-                                player_fsm:pending_update_runtime_data(PlayerUid, ChangedList)
+                                player_statem:pending_update_runtime_data(PlayerUid, {ChangedFilesStruct, DeletedFilesStruct ++ DeletedFileNames})
                             end, ok, login_server:logged_in_player_uids()),
 
                         {ok, State#state{
@@ -511,3 +514,36 @@ grab_runtime_data([Phase | Tail], RuntimeDatasMap) ->
         DeeperMap ->
             grab_runtime_data(Tail, DeeperMap)
     end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Retrieves runtime datas by data struct.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec grab_runtime_datas(State, DataStruct) -> TargetRuntimeDataMap when
+    State :: #state{},
+    DataStruct :: [csv_to_object:csv_data_struct()],
+    TargetRuntimeDataMap :: csv_to_object:csv_data().
+grab_runtime_datas(#state{
+    runtime_datas = RuntimeDatasMap
+} = State, DataStruct) ->
+    lists:foldl(
+        fun
+            ({DataKey, RecordKeys}, AccTargetRuntimeDataMap) ->
+                DataMap = maps:get(DataKey, RuntimeDatasMap),
+                AccTargetRuntimeDataMap#{
+                    DataKey => maps:with(RecordKeys, DataMap)
+                };
+            ({DataKey, RecordKeys, DependencyDataStructFunc}, AccTargetRuntimeDataMap) ->
+                TargetDataMap = maps:with(RecordKeys, maps:get(DataKey, RuntimeDatasMap)),
+                DependencyDataStruct = DependencyDataStructFunc(TargetDataMap),
+                DependencyDataMap = grab_runtime_datas(State, DependencyDataStruct),
+                maps:merge(AccTargetRuntimeDataMap#{
+                    DataKey => TargetDataMap
+                }, DependencyDataMap);
+            (DataKey, AccTargetRuntimeDataMap) ->
+                AccTargetRuntimeDataMap#{
+                    DataKey => maps:get(DataKey, RuntimeDatasMap)
+                }
+        end, #{}, DataStruct).

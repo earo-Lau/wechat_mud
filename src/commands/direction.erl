@@ -13,7 +13,7 @@
 
 %% API
 -export([
-    exec/3,
+    exec/4,
     parse_direction/1,
     go_direction/3
 ]).
@@ -39,12 +39,14 @@
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec exec(DispatcherPid, Uid, Direction) -> ok when
-    Uid :: player_fsm:uid(),
+-spec exec(DispatcherPid, Uid, RawInput, Direction) -> ok when
+    Uid :: player_statem:uid(),
+    RawInput :: binary(),
     DispatcherPid :: pid(),
     Direction :: directions().
-exec(DispatcherPid, Uid, Direction) ->
+exec(DispatcherPid, Uid, RawInput, Direction) ->
     CommandContext = #command_context{
+        raw_input = RawInput,
         command_func = go_direction,
         command_args = Direction,
         dispatcher_pid = DispatcherPid
@@ -68,7 +70,7 @@ exec(DispatcherPid, Uid, Direction) ->
 -spec go_direction(CommandContext, State, StateName) -> {ok, UpdatedStateName, UpdatedState} when
     CommandContext :: #command_context{},
     State :: #player_state{},
-    StateName :: player_fsm:player_state_name(),
+    StateName :: player_statem:player_state_name(),
     UpdatedStateName :: StateName,
     UpdatedState :: State.
 go_direction(
@@ -87,9 +89,9 @@ go_direction(
     {TargetSceneName, UpdatedState} =
         case scene_fsm:go_direction(CurSceneName, Uid, Direction) of
             undefined ->
-                {CurSceneName, player_fsm:do_response_content(State, [{nls, invalid_exit}], DispatcherPid)};
+                {CurSceneName, player_statem:do_response_content(State, [{nls, invalid_exit}], DispatcherPid)};
             NewSceneName ->
-                ok = scene_fsm:enter(NewSceneName, DispatcherPid, player_fsm:simple_player(PlayerProfile), CurSceneName),
+                ok = scene_fsm:enter(NewSceneName, DispatcherPid, player_statem:simple_player(PlayerProfile), CurSceneName),
                 {NewSceneName, State}
         end,
     {

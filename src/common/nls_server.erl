@@ -27,11 +27,10 @@
     show_langs/2,
     do_response_content/3,
     lang_map/1,
-    start/0,
-    stop/0,
     fill_in_content/3,
     convert_target_nls/4,
-    nls_file_name_map/0
+    nls_file_name_map/0,
+    get_nls_langs/1
 ]).
 
 %% gen_server callbacks
@@ -94,26 +93,6 @@ start_link() ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Starts server by setting module name as server name without link.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec start() -> gen:start_ret().
-start() ->
-    gen_server:start({local, ?SERVER}, ?MODULE, [], []).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Stop server.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec stop() -> ok.
-stop() ->
-    gen_server:cast(?SERVER, stop).
-
-%%--------------------------------------------------------------------
-%% @doc
 %% Given "NlsObjectList" contains items {nls, NlsKey} with direct return
 %% content values, the function is to replace {nls, NlsKey} with the actual
 %% nls content, and then immediately return the result to user.
@@ -141,6 +120,19 @@ response_content(NlsObjectList, Lang, DispatcherPid) ->
     ContentList :: [value()].
 get_nls_content(NlsObjectList, Lang) ->
     gen_server:call(?SERVER, {get_nls_content, NlsObjectList, Lang}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Given "NlsKeyList" contains items [NlsKey] to retrieve [NlsValue] of all langugages.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec get_nls_langs(NlsKeyList) -> NlsValuesList when
+    NlsKeyList :: [key()],
+    NlsValueList :: [value()],
+    NlsValuesList :: [NlsValueList].
+get_nls_langs(NlsKeyList) ->
+    gen_server:call(?SERVER, {get_nls_langs, NlsKeyList}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -246,7 +238,7 @@ nls_file_name_map() ->
     AccContent :: SrcContent,
     FinalContent :: AccContent.
 fill_in_content(<<"${}", Rest/binary>>, [RawReplacement | Replacements], AccContent) ->
-    Replacement = cm:to_binary(RawReplacement),
+    Replacement = elib:to_binary(RawReplacement),
     fill_in_content(Rest, Replacements, <<AccContent/binary, Replacement/binary>>);
 fill_in_content(<<"${", _IgnoreOneByte, Rest/binary>>, Replacements, AccContent) ->
     fill_in_content(<<"${", Rest/binary>>, Replacements, AccContent);
@@ -322,14 +314,14 @@ convert_target_nls([], _LangMap, _TargetNlsSet, NlsObjectList) ->
 init([]) ->
     io:format("nls server starting..."),
 
-    NlsPath = filename:join(code:priv_dir(cm:app_name()), ?MODULE_STRING),
+    NlsPath = filename:join(code:priv_dir(elib:app_name()), ?MODULE_STRING),
     {ok, FileNameList} = file:list_dir(NlsPath),
 
     CommonNlsFilePath = filename:append(NlsPath, ?COMMON_NLS),
     FilePathList = [filename:join(NlsPath, NlsFileName) || NlsFileName <- FileNameList],
     {NlsMap, _DiffNlsMap, NlsFileNameMap} = lists:foldl(fun read_nls_file/2, {#{}, #{}, #{}}, [CommonNlsFilePath | FilePathList]),
 
-    io:format("started~n"),
+    io:format("started~n~n"),
     {
         ok,
         #state{
@@ -358,10 +350,11 @@ init([]) ->
     {get, NlsKey, Lang} |
     {is_valid_lang, TargetLang} |
     {get_nls_content, NlsObjectList, Lang} |
+    {get_nls_langs, NlsKeyList} |
     {lang_map, Lang} |
     stop,
 
-    Reply :: State | ContentList | IsValidLang | NlsValue,
+    Reply :: State | ContentList | IsValidLang | NlsValue | NlsValuesList,
 
     NlsKey :: erlang:registered_name(),
     NlsValue :: value(),
@@ -370,6 +363,9 @@ init([]) ->
     NlsObjectList :: [nls_server:nls_object()],
     ContentList :: [NlsValue],
     IsValidLang :: boolean(),
+    NlsKeyList :: [key()],
+    NlsValueList :: [NlsValue],
+    NlsValuesList :: [NlsValueList],
 
     From :: {pid(), Tag :: term()}, % generic term
     State :: #state{},
@@ -392,7 +388,7 @@ handle_call(
         valid_langs = ValidLangs
     } = State
 ) ->
-    Result = case cm:type_of(TargetLang) of
+    Result = case elib:type_of(TargetLang) of
                  binary ->
                      lists:member(TargetLang, ValidLangs);
                  atom ->
@@ -411,6 +407,38 @@ handle_call(
     LangMap = maps:get(Lang, NlsMap),
     ReturnContent = fill_in_nls(NlsObjectList, LangMap, []),
     {reply, ReturnContent, State};
+handle_call(
+    {get_nls_langs, NlsKeyList},
+    _From,
+    #state{
+        nls_map = NlsMap
+    } = State
+) ->
+    NlsValuesList = maps:fold(
+        fun(_Lang, LangMap, AccLangsList) ->
+            CurLangsList = lists:foldl(
+                fun({nls, NlsKey}, AccCurLangsList) ->
+                    CurNlsValue = maps:get(NlsKey, LangMap),
+                    [CurNlsValue | AccCurLangsList]
+                end, [], NlsKeyList),
+
+            {UpdatedAccLangsList, []} =
+                case AccLangsList of
+                    [] ->
+                        NewLangsList = lists:foldl(
+                            fun(NlsValue, AccNewLangsList) ->
+                                [[NlsValue] | AccNewLangsList]
+                            end, [], CurLangsList),
+                        {NewLangsList, []};
+                    _HasNlsValues ->
+                        lists:foldl(
+                            fun(NlsValue, {AccAccLangsList, [AccLangs | OriAccLangsList]}) ->
+                                {[[NlsValue | AccLangs] | AccAccLangsList], OriAccLangsList}
+                            end, {[], AccLangsList}, CurLangsList)
+                end,
+            lists:reverse(UpdatedAccLangsList)
+        end, [], NlsMap),
+    {reply, NlsValuesList, State};
 handle_call(
     {lang_map, Lang},
     _From,
@@ -623,7 +651,7 @@ code_change(_OldVsn, #state{
 
                         ok = gb_sets:fold(
                             fun(PlayerUid, ok) ->
-                                PlayerLang = player_fsm:get_lang(PlayerUid),
+                                PlayerLang = player_statem:get_lang(PlayerUid),
                                 PlayerDiffLangMap = maps:get(PlayerLang, DiffNlsMap, #{}),
                                 case gb_sets:is_empty(UpdatedRemovedNlsSet) of
                                     true ->
@@ -632,10 +660,10 @@ code_change(_OldVsn, #state{
                                             true ->
                                                 ok;
                                             false ->
-                                                player_fsm:update_nls(PlayerUid, PlayerDiffLangMap, UpdatedRemovedNlsSet)
+                                                player_statem:update_nls(PlayerUid, PlayerDiffLangMap, UpdatedRemovedNlsSet)
                                         end;
                                     false ->
-                                        player_fsm:update_nls(PlayerUid, PlayerDiffLangMap, UpdatedRemovedNlsSet)
+                                        player_statem:update_nls(PlayerUid, PlayerDiffLangMap, UpdatedRemovedNlsSet)
                                 end
                             end, ok, login_server:logged_in_player_uids()),
 
@@ -834,7 +862,7 @@ fill_in_nls([{NlsContent, Replacements} | Tail], LangMap, AccContentList) ->
     ReplacedContent = fill_in_content(NlsContent, ConvertedReplacements, <<>>),
     fill_in_nls(Tail, LangMap, [ReplacedContent | AccContentList]);
 fill_in_nls([NonNlsKey | Tail], LangMap, AccContentList) ->
-    fill_in_nls(Tail, LangMap, [cm:to_binary(NonNlsKey) | AccContentList]).
+    fill_in_nls(Tail, LangMap, [elib:to_binary(NonNlsKey) | AccContentList]).
 
 %%--------------------------------------------------------------------
 %% @doc

@@ -14,7 +14,7 @@
 
 %% API
 -export([
-    exec/3,
+    exec/4,
     to_settle/3,
     feedback/3
 ]).
@@ -34,13 +34,15 @@
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec exec(DispatcherPid, Uid, TargetArgs) -> ok when
+-spec exec(DispatcherPid, Uid, RawInput, TargetArgs) -> ok when
     DispatcherPid :: pid(),
-    Uid :: player_fsm:uid(),
+    Uid :: player_statem:uid(),
+    RawInput :: binary(),
     TargetArgs :: binary().
-exec(DispatcherPid, Uid, TargetArgs) ->
-    {ok, TargetId, Sequence} = cm:parse_target_id(TargetArgs),
+exec(DispatcherPid, Uid, RawInput, TargetArgs) ->
+    {ok, TargetId, Sequence} = elib:parse_target_id(TargetArgs),
     CommandContext = #command_context{
+        raw_input = RawInput,
         command_func = to_settle,
         dispatcher_pid = DispatcherPid,
         target_name = TargetId,
@@ -59,7 +61,7 @@ exec(DispatcherPid, Uid, TargetArgs) ->
 -spec to_settle(CommandContext, State, StateName) -> {ok, UpdatedStateName, UpdatedState} when
     CommandContext :: #command_context{},
     State :: #player_state{} | #npc_state{},
-    StateName :: player_fsm:player_state_name() | npc_fsm:npc_state_name(),
+    StateName :: player_statem:player_state_name() | npc_fsm:npc_state_name(),
     UpdatedStateName :: StateName,
     UpdatedState :: State.
 to_settle(
@@ -73,7 +75,7 @@ to_settle(
     StateName
 ) ->
     Message = [{nls, under_attack, [SrcName]}, <<"\n">>],
-    UpdatedState = player_fsm:append_message_local(Message, battle, State),
+    UpdatedState = player_statem:append_message_local(Message, battle, State),
 
     UpdatedCommandContext = CommandContext#command_context{
         command_func = feedback
@@ -105,7 +107,7 @@ to_settle(
 -spec feedback(CommandContext, State, StateName) -> {ok, UpdatedStateName, UpdatedState} when
     CommandContext :: #command_context{},
     State :: #player_state{} | #npc_state{},
-    StateName :: player_fsm:player_state_name() | npc_fsm:npc_state_name(),
+    StateName :: player_statem:player_state_name() | npc_fsm:npc_state_name(),
     UpdatedStateName :: StateName,
     UpdatedState :: State.
 feedback(
@@ -119,7 +121,7 @@ feedback(
     StateName
 ) ->
     Message = [{nls, launch_attack, [TargetName]}],
-    UpdatedState = player_fsm:do_response_content(State, Message, DispatcherPid),
+    UpdatedState = player_statem:do_response_content(State, Message, DispatcherPid),
     {ok, StateName, UpdatedState};
 feedback(
     #command_context{
@@ -132,7 +134,7 @@ feedback(
     StateName
 ) ->
     Message = [{nls, launch_attack, [TargetName]}],
-    UpdatedState = player_fsm:do_response_content(State, Message, DispatcherPid),
+    UpdatedState = player_statem:do_response_content(State, Message, DispatcherPid),
     {ok, StateName, UpdatedState}.
 
 %%%===================================================================

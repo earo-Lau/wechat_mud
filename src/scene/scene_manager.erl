@@ -4,9 +4,9 @@
 %%% @doc
 %%%
 %%% @end
-%%% Created : 19. Feb 2016 7:08 PM
+%%% Created : 03. Mar 2016 9:16 PM
 %%%-------------------------------------------------------------------
--module(information_server).
+-module(scene_manager).
 -author("shuieryin").
 
 -behaviour(gen_server).
@@ -14,9 +14,7 @@
 %% API
 -export([
     start_link/0,
-    start/0,
-    stop/0,
-    module_sequence/0
+    scene_specs_map/0
 ]).
 
 %% gen_server callbacks
@@ -32,23 +30,19 @@
 
 -define(SERVER, ?MODULE).
 
+-type scene_specs_map() :: #{scene_fsm:scene_name() => scene_fsm_sup:scene_child()}.
+
+-export_type([
+    scene_specs_map/0
+]).
+
 -record(state, {
-    root_sup_name :: module()
+    scene_specs_map :: scene_specs_map()
 }).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Retrieves module sequences for hot code upgrade.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec module_sequence() -> [module()].
-module_sequence() ->
-    gen_server:call({global, ?MODULE}, module_sequence).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -58,27 +52,17 @@ module_sequence() ->
 %%--------------------------------------------------------------------
 -spec start_link() -> gen:start_ret().
 start_link() ->
-    gen_server:start_link({global, ?SERVER}, ?MODULE, [], []).
+    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Starts server by setting module name as server name without link.
+%% Retrieve scenes map.
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec start() -> gen:start_ret().
-start() ->
-    gen_server:start({global, ?SERVER}, ?MODULE, [], []).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Stop server.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec stop() -> ok.
-stop() ->
-    gen_server:cast(?SERVER, stop).
+-spec scene_specs_map() -> scene_specs_map().
+scene_specs_map() ->
+    gen_server:call(?MODULE, scene_specs_map).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -105,14 +89,9 @@ stop() ->
     State :: #state{},
     Reason :: term(). % generic term
 init([]) ->
-    io:format("~p starting...", [?MODULE]),
-
-    RootSupName = list_to_atom(atom_to_list(cm:app_name()) ++ "_sup"),
-
-    io:format("started~n"),
-
+    {SceneSpecsMap, _ChangedSceneSpecsMap} = load_scene_specs(#{}),
     {ok, #state{
-        root_sup_name = RootSupName
+        scene_specs_map = SceneSpecsMap
     }}.
 
 %%--------------------------------------------------------------------
@@ -130,17 +109,17 @@ init([]) ->
     {stop, Reason, Reply, NewState} |
     {stop, Reason, NewState} when
 
-    Request :: module_sequence,
-    Reply :: [module()],
+    Request :: scene_specs_map,
+    Reply :: scene_specs_map(),
 
     From :: {pid(), Tag :: term()}, % generic term
     State :: #state{},
     NewState :: State,
     Reason :: term(). % generic term
-handle_call(module_sequence, _From, #state{
-    root_sup_name = RootSupName
+handle_call(scene_specs_map, _From, #state{
+    scene_specs_map = SceneSpecsMap
 } = State) ->
-    {reply, lists:flatten(gen_sequence(RootSupName)), State}.
+    {reply, SceneSpecsMap, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -220,7 +199,24 @@ terminate(_Reason, _State) ->
     NewState :: State,
     Reason :: term(). % generic term
 code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
+    try
+        #state{
+            scene_specs_map = OldSceneSpecsMap
+        } = State,
+        {SceneSpecsMap, ChangedSceneSpecsMap} = load_scene_specs(OldSceneSpecsMap),
+        error_logger:info_msg("~p~n============changed scenes~n~tp~n", [?MODULE_STRING, ChangedSceneSpecsMap]),
+        ok = maps:fold(
+            fun(SceneName, {_SceneName, {scene_fsm, start_link, [SceneInfo]}, _RestartTime, _ShutdownTime, _WorkerType, [scene_fsm]}, ok) ->
+                scene_fsm:update_scene_info(SceneName, SceneInfo)
+            end, ok, ChangedSceneSpecsMap),
+        {ok, State#state{
+            scene_specs_map = SceneSpecsMap
+        }}
+    catch
+        Type:Reason ->
+            error_logger:error_msg("Type:~p~nReason:~p~nStackTrace:~p~n", [Type, Reason, erlang:get_stacktrace()]),
+            {ok, State}
+    end.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -246,30 +242,26 @@ format_status(Opt, StatusData) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Generate module sequences for hot code upgrade.
+%% Load scene specs from csv file and generate child specs map.
+%% This function is usually called by init/1 and code_change/3.
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec gen_sequence(module()) -> [module()].
-gen_sequence(RootSupName) ->
-    RootSequences = supervisor:which_children(RootSupName),
-    lists:foldl(
-        fun(Spec, AccSequence) ->
-            case Spec of
-                {_ModuleId, _Pid, worker, [ModuleName]} ->
-                    LastModuleName = case AccSequence of
-                                         [] ->
-                                             undefined;
-                                         [LModuleName | _RestAccModuleNames] ->
-                                             LModuleName
-                                     end,
-                    case LastModuleName =/= ModuleName of
-                        true ->
-                            [ModuleName | AccSequence];
-                        false ->
-                            AccSequence
-                    end;
-                {ModuleName, _Pid, supervisor, [ModuleName]} ->
-                    [ModuleName, gen_sequence(ModuleName) | AccSequence]
-            end
-        end, [], RootSequences).
+-spec load_scene_specs(ExistingSceneSpecsMap) -> {SceneSpecsMap, ChangedSceneSpecsMap} when
+    SceneSpecsMap :: scene_specs_map(),
+    ExistingSceneSpecsMap :: SceneSpecsMap,
+    ChangedSceneSpecsMap :: SceneSpecsMap.
+load_scene_specs(ExistingSceneSpecsMap) ->
+    Restart = permanent,
+    Shutdown = 2000,
+    Type = worker,
+
+    ChildFun =
+        fun(SceneValues) ->
+            scene_fsm:scene_child_spec(SceneValues, Restart, Shutdown, Type)
+        end,
+
+    SceneNlsPath = filename:join(code:priv_dir(elib:app_name()), ?MODULE_STRING),
+    {ok, FileNameList} = file:list_dir(SceneNlsPath),
+    FilePathList = [filename:join(SceneNlsPath, FileName) || FileName <- FileNameList],
+    csv_to_object:traverse_merge_files(FilePathList, #{}, ExistingSceneSpecsMap, ChildFun).

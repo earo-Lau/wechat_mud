@@ -26,11 +26,12 @@
     is_uid_logged_in/1,
     logout/2,
     is_id_registered/1,
-    start/0,
-    stop/0,
     registered_player_uids/0,
     logout_all_players/0,
-    logged_in_player_uids/0
+    logged_in_player_uids/0,
+    not_logged_in_player_uids/0,
+    uids_by_ids/1,
+    show_state/0
 ]).
 
 %% gen_server callbacks
@@ -46,18 +47,15 @@
 
 -define(SERVER, ?MODULE).
 
--type uid_set() :: gb_sets:set(player_fsm:uid()).
--type id_set() :: gb_sets:set(player_fsm:id()).
+-type uid_set() :: gb_sets:set(player_statem:uid()).
 
 -include("../data_type/player_profile.hrl").
 
 -record(state, {
-    registration_uids_set :: uid_set(),
-    registered_uids_set :: uid_set(),
     logged_in_uids_set :: uid_set(),
     registering_uids_set :: uid_set(),
-    registered_ids_set :: id_set(),
-    born_type_info_map :: register_fsm:born_type_info_map()
+    born_type_info_map :: register_fsm:born_type_info_map(),
+    uids_cross_ids :: [{player_statem:uid(), player_statem:id()}]
 }).
 
 %%%===================================================================
@@ -76,32 +74,12 @@ start_link() ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Starts server by setting module name as server name without link.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec start() -> gen:start_ret().
-start() ->
-    gen_server:start({local, ?SERVER}, ?MODULE, [], []).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Stop server.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec stop() -> ok.
-stop() ->
-    gen_server:cast(?SERVER, stop).
-
-%%--------------------------------------------------------------------
-%% @doc
 %% Checks if uid has been registered.
 %%
 %% @end
 %%--------------------------------------------------------------------
 -spec is_uid_registered(Uid) -> boolean() when
-    Uid :: player_fsm:uid().
+    Uid :: player_statem:uid().
 is_uid_registered(Uid) ->
     gen_server:call(?MODULE, {is_uid_registered, Uid}).
 
@@ -112,7 +90,7 @@ is_uid_registered(Uid) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec is_id_registered(Id) -> boolean() when
-    Id :: player_fsm:id().
+    Id :: player_statem:id().
 is_id_registered(Id) ->
     gen_server:call(?MODULE, {is_id_registered, Id}).
 
@@ -122,7 +100,7 @@ is_id_registered(Id) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec registered_player_uids() -> uid_set().
+-spec registered_player_uids() -> [player_statem:uid()].
 registered_player_uids() ->
     gen_server:call(?MODULE, registered_player_uids).
 
@@ -133,7 +111,7 @@ registered_player_uids() ->
 %% @end
 %%--------------------------------------------------------------------
 -spec is_in_registration(Uid) -> boolean() when
-    Uid :: player_fsm:uid().
+    Uid :: player_statem:uid().
 is_in_registration(Uid) ->
     gen_server:call(?MODULE, {is_in_registration, Uid}).
 
@@ -144,7 +122,7 @@ is_in_registration(Uid) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec register_uid(DispatcherPid, Uid) -> ok when
-    Uid :: player_fsm:uid(),
+    Uid :: player_statem:uid(),
     DispatcherPid :: pid().
 register_uid(DispatcherPid, Uid) ->
     gen_server:cast(?MODULE, {register_uid, DispatcherPid, Uid}).
@@ -170,7 +148,7 @@ registration_done(PlayerProfile) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec delete_player(Uid) -> ok when
-    Uid :: player_fsm:uid().
+    Uid :: player_statem:uid().
 delete_player(Uid) ->
     gen_server:call(?MODULE, {delete_user, Uid}).
 
@@ -182,7 +160,7 @@ delete_player(Uid) ->
 %%--------------------------------------------------------------------
 -spec login(DispatcherPid, Uid) -> ok when
     DispatcherPid :: pid(),
-    Uid :: player_fsm:uid().
+    Uid :: player_statem:uid().
 login(DispatcherPid, Uid) ->
     gen_server:call(?MODULE, {login, DispatcherPid, Uid}).
 
@@ -193,7 +171,7 @@ login(DispatcherPid, Uid) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec is_uid_logged_in(Uid) -> boolean() when
-    Uid :: player_fsm:uid().
+    Uid :: player_statem:uid().
 is_uid_logged_in(Uid) ->
     gen_server:call(?MODULE, {is_uid_logged_in, Uid}).
 
@@ -205,7 +183,7 @@ is_uid_logged_in(Uid) ->
 %%--------------------------------------------------------------------
 -spec logout(DispatcherPid, Uid) -> ok when
     DispatcherPid :: pid(),
-    Uid :: player_fsm:uid().
+    Uid :: player_statem:uid().
 logout(DispatcherPid, Uid) ->
     gen_server:call(?MODULE, {logout, DispatcherPid, Uid}).
 
@@ -230,6 +208,36 @@ logout_all_players() ->
 logged_in_player_uids() ->
     gen_server:call(?MODULE, logged_in_player_uids).
 
+%%--------------------------------------------------------------------
+%% @doc
+%% Retrieves all none logged in player uids.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec not_logged_in_player_uids() -> [player_statem:uid()].
+not_logged_in_player_uids() ->
+    gen_server:call(?MODULE, not_logged_in_player_uids).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Retrieve uids by ids.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec uids_by_ids([player_statem:id()]) -> [player_statem:uid()].
+uids_by_ids(PlayerIds) ->
+    gen_server:call(?MODULE, {uids_by_ids, PlayerIds}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Retrieve State.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec show_state() -> #state{}.
+show_state() ->
+    gen_server:call(?MODULE, show_state).
+
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
@@ -253,36 +261,26 @@ logged_in_player_uids() ->
     Reason :: term(). % generic term
 init([]) ->
     io:format("~p starting...", [?MODULE]),
-    RegisteredUidsSet =
-        case redis_client_server:get(registered_uids_set) of
-            undefined ->
-                NewRegisteredUidsSet = gb_sets:new(),
-                true = redis_client_server:set(registered_uids_set, NewRegisteredUidsSet, true),
-                NewRegisteredUidsSet;
-            UidsSet ->
-                UidsSet
-        end,
 
-    RegisteredIdsSet =
-        case redis_client_server:get(registered_ids_set) of
+    UidsCrossIds =
+        case redis_client_server:get(uids_cross_ids) of
             undefined ->
-                NewRegisteredIdsSet = gb_sets:new(),
-                true = redis_client_server:set(registered_uids_set, NewRegisteredIdsSet, true),
-                NewRegisteredIdsSet;
-            IdsSet ->
-                IdsSet
+                NewUidsCrossIds = [],
+                true = redis_client_server:set(uids_cross_ids, NewUidsCrossIds, true),
+                NewUidsCrossIds;
+            ExistingUidsCrossIds ->
+                ExistingUidsCrossIds
         end,
 
     BornTypeInfoMap = common_server:runtime_data(born_type_info),
     State = #state{
         registering_uids_set = gb_sets:new(),
-        registered_uids_set = RegisteredUidsSet,
-        registered_ids_set = RegisteredIdsSet,
         logged_in_uids_set = gb_sets:new(),
-        born_type_info_map = BornTypeInfoMap
+        born_type_info_map = BornTypeInfoMap,
+        uids_cross_ids = UidsCrossIds
     },
 
-    io:format("started~n"),
+    io:format("started~n~n"),
     {ok, State}.
 
 %%--------------------------------------------------------------------
@@ -303,19 +301,35 @@ init([]) ->
     Request :: {is_uid_registered | is_in_registration | delete_user, Uid} |
     registered_player_uids |
     logged_in_player_uids |
+    not_logged_in_player_uids |
     {registration_done, PlayerProfile} |
     {login, DispatcherPid, Uid} |
-    {logout, DispatcherPid, Uid},
+    {logout, DispatcherPid, Uid} |
+    {uids_by_ids, PlayerIds} |
+    show_state,
 
-    Reply :: IsUidRegistered | IsIdRegistered | IsInRegistration | IsUserLoggedIn | ok,
+    Reply ::
+    IsUidRegistered |
+    IsIdRegistered |
+    IsInRegistration |
+    IsUserLoggedIn |
+    LoggedInUidsSet |
+    NotLoggedInUidsSet |
+    PlayerUids |
+    State |
+    ok,
 
-    Uid :: player_fsm:uid(),
+    Uid :: player_statem:uid(),
     IsUidRegistered :: boolean(),
     IsIdRegistered :: boolean(),
     IsInRegistration :: boolean(),
     IsUserLoggedIn :: boolean(),
     PlayerProfile :: #player_profile{},
     DispatcherPid :: pid(),
+    LoggedInUidsSet :: uid_set(),
+    NotLoggedInUidsSet :: LoggedInUidsSet,
+    PlayerIds :: [player_statem:id()],
+    PlayerUids :: [player_statem:uid()],
 
     From :: {pid(), Tag :: term()}, % generic term
     State :: #state{},
@@ -325,18 +339,18 @@ handle_call(
     {is_uid_registered, Uid},
     _From,
     #state{
-        registered_uids_set = RegisteredUidsSet
+        uids_cross_ids = UidsCrossIds
     } = State
 ) ->
-    {reply, gb_sets:is_element(Uid, RegisteredUidsSet), State};
+    {reply, lists:keymember(Uid, 1, UidsCrossIds), State};
 handle_call(
     {is_id_registered, Id},
     _From,
     #state{
-        registered_ids_set = RegisteredIdsSet
+        uids_cross_ids = UidsCrossIds
     } = State
 ) ->
-    {reply, gb_sets:is_element(Id, RegisteredIdsSet), State};
+    {reply, lists:keymember(Id, 2, UidsCrossIds), State};
 handle_call(
     {is_in_registration, Uid},
     _From,
@@ -350,17 +364,17 @@ handle_call(
     {delete_user, Uid},
     _From,
     #state{
-        registered_uids_set = RegisteredUidsSet
+        uids_cross_ids = UidsCrossIds
     } = State
 ) ->
     LoggedOutState = logout(internal, Uid, State),
-    ok = cm:until_process_terminated(Uid),
-    UpdatedRegisteredUidsSet = gb_sets:delete(Uid, RegisteredUidsSet),
+    ok = elib:until_process_terminated(Uid),
+    UpdatedUidsCrossIds = lists:keydelete(Uid, 1, UidsCrossIds),
 
     ok = redis_client_server:async_del([Uid], false),
-    ok = redis_client_server:async_set(registered_uids_set, UpdatedRegisteredUidsSet, true),
+    ok = redis_client_server:async_set(uids_cross_ids, UpdatedUidsCrossIds, true),
 
-    {reply, ok, LoggedOutState#state{registered_uids_set = UpdatedRegisteredUidsSet}};
+    {reply, ok, LoggedOutState#state{uids_cross_ids = UpdatedUidsCrossIds}};
 handle_call(
     {is_uid_logged_in, Uid},
     _From,
@@ -373,10 +387,11 @@ handle_call(
     registered_player_uids,
     _From,
     #state{
-        registered_uids_set = RegisteredUidsSet
+        uids_cross_ids = UidsCrossIds
     } = State
 ) ->
-    {reply, RegisteredUidsSet, State};
+    RegisteredUids = [Uid || {Uid, _Id} <- UidsCrossIds],
+    {reply, RegisteredUids, State};
 handle_call(
     logged_in_player_uids,
     _From,
@@ -385,6 +400,16 @@ handle_call(
     } = State
 ) ->
     {reply, LoggedInUidsSet, State};
+handle_call(
+    not_logged_in_player_uids,
+    _From,
+    #state{
+        logged_in_uids_set = LoggedInUidsSet,
+        uids_cross_ids = UidsCrossIds
+    } = State
+) ->
+    NotLoggedInUids = [Uid || {Uid, _Id} <- UidsCrossIds, not gb_sets:is_element(Uid, LoggedInUidsSet)],
+    {reply, NotLoggedInUids, State};
 handle_call(
     {
         registration_done,
@@ -396,29 +421,16 @@ handle_call(
     _From,
     #state{
         registering_uids_set = RegisteringUidsSet,
-        registered_uids_set = RegisteredUidsSet,
-        registered_ids_set = RegisteredIdsSet
+        uids_cross_ids = UidsCrossIds
     } = State
 ) ->
-    UpdatedRegisteredUidsSet = gb_sets:add(Uid, RegisteredUidsSet),
+    UpdatedUidsCrossIds = [{Uid, Id} | UidsCrossIds],
 
-    ok = redis_client_server:async_set(registered_uids_set, UpdatedRegisteredUidsSet, false),
-
-    UpdatedRegisteredIdsSet = gb_sets:add(Id,
-        case redis_client_server:get(Uid) of
-            #player_profile{
-                id = ExistingId
-            } ->
-                gb_sets:del_element(ExistingId, RegisteredIdsSet);
-            _NotFound ->
-                RegisteredIdsSet
-        end),
-    ok = redis_client_server:async_set(registered_ids_set, UpdatedRegisteredIdsSet, false),
+    ok = redis_client_server:async_set(uids_cross_ids, UpdatedUidsCrossIds, false),
     true = redis_client_server:set(Uid, PlayerProfile, true),
 
     UpdatedState = State#state{
-        registered_uids_set = UpdatedRegisteredUidsSet,
-        registered_ids_set = UpdatedRegisteredIdsSet,
+        uids_cross_ids = UpdatedUidsCrossIds,
         registering_uids_set = gb_sets:del_element(Uid, RegisteringUidsSet)
     },
     {reply, ok, UpdatedState};
@@ -432,16 +444,21 @@ handle_call(
     UpdatedLoggedInUidsSet =
         case gb_sets:is_element(Uid, LoggedInUidsSet) of
             false ->
-                {ok, _Pid} = player_fsm_sup:add_child(Uid, DispatcherPid),
+                case player_statem_sup:add_child(Uid, DispatcherPid) of
+                    {ok, _Pid} ->
+                        ok;
+                    Exception ->
+                        throw(Exception)
+                end,
                 gb_sets:add(Uid, LoggedInUidsSet);
             true ->
-                ok = player_fsm:response_content(Uid, [{nls, already_login}], DispatcherPid),
+                ok = player_statem:response_content(Uid, [{nls, already_login}], DispatcherPid),
                 LoggedInUidsSet
         end,
 
     {reply, ok, State#state{logged_in_uids_set = UpdatedLoggedInUidsSet}};
 handle_call({logout, DispatcherPid, Uid}, _From, State) ->
-    ok = player_fsm:response_content(Uid, [{nls, already_logout}], DispatcherPid),
+    ok = player_statem:response_content(Uid, [{nls, already_logout}], DispatcherPid),
     UpdatedState = logout(internal, Uid, State),
     {reply, ok, UpdatedState};
 handle_call(
@@ -451,7 +468,14 @@ handle_call(
         logged_in_uids_set = LoggedInUidsSet
     } = State
 ) ->
-    {reply, logout_all_players(LoggedInUidsSet), State}.
+    {reply, logout_all_players(LoggedInUidsSet), State};
+handle_call({uids_by_ids, PlayerIds}, _From, #state{
+    uids_cross_ids = UidsCrossIds
+} = State) ->
+    PlayerUids = [Uid || {Uid, Id} <- UidsCrossIds, lists:member(Id, PlayerIds)],
+    {reply, PlayerUids, State};
+handle_call(show_state, _From, State) ->
+    {reply, State, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -470,7 +494,7 @@ handle_call(
     stop,
 
     DispatcherPid :: pid(),
-    Uid :: player_fsm:uid(),
+    Uid :: player_statem:uid(),
     State :: #state{},
     NewState :: State,
     Reason :: term(). % generic term
@@ -552,7 +576,14 @@ terminate(_Reason, _State) ->
     NewState :: State,
     Reason :: term(). % generic term
 code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
+    try
+        UpdatedState = temp_player_data_update(State),
+        {ok, UpdatedState}
+    catch
+        Type:Reason ->
+            error_logger:error_msg("Type:~p~nReason:~p~nStackTrace:~p~n", [Type, Reason, erlang:get_stacktrace()]),
+            {ok, State}
+    end.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -586,7 +617,7 @@ format_status(Opt, StatusData) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec logout(internal, Uid, State) -> UpdatedState when
-    Uid :: player_fsm:uid(),
+    Uid :: player_statem:uid(),
     State :: #state{},
     UpdatedState :: State.
 logout(
@@ -601,7 +632,7 @@ logout(
             false ->
                 LoggedInUidsSet;
             true ->
-                ok = player_fsm:logout(Uid),
+                ok = player_statem:logout(Uid),
                 gb_sets:del_element(Uid, LoggedInUidsSet)
         end,
     State#state{
@@ -616,7 +647,7 @@ logout(
 %% @end
 %%--------------------------------------------------------------------
 -spec logout_all_players(LoggedInUidsSet) -> ok when
-    LoggedInUidsSet :: gb_sets:set().
+    LoggedInUidsSet :: uid_set().
 logout_all_players(LoggedInUidsSet) ->
     case gb_sets:is_empty(LoggedInUidsSet) of
         true ->
@@ -635,10 +666,22 @@ logout_all_players(LoggedInUidsSet) ->
 %%--------------------------------------------------------------------
 -spec do_logout_all_players(Next) -> ok when
     Next :: {Uid, Iter} | none,
-    Uid :: player_fsm:uid(),
+    Uid :: player_statem:uid(),
     Iter :: gb_sets:iter().
 do_logout_all_players({Uid, Iter}) ->
-    ok = player_fsm:logout(Uid),
+    ok = player_statem:logout(Uid),
     do_logout_all_players(gb_sets:next(Iter));
 do_logout_all_players(none) ->
     ok.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Temporary code for handling data change for logged in players.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec temp_player_data_update(State) -> UpdatedState when
+    State :: #state{} | tuple(), % generic tuple
+    UpdatedState :: State.
+temp_player_data_update(State) ->
+    State.

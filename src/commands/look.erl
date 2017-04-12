@@ -15,8 +15,8 @@
 
 %% API
 -export([
-    exec/2,
     exec/3,
+    exec/4,
     being_look/3,
     feedback/3,
     look_scene/3
@@ -42,11 +42,13 @@
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec exec(DispatcherPid, Uid) -> ok when
-    Uid :: player_fsm:uid(),
+-spec exec(DispatcherPid, Uid, RawInput) -> ok when
+    Uid :: player_statem:uid(),
+    RawInput :: binary(),
     DispatcherPid :: pid().
-exec(DispatcherPid, Uid) ->
+exec(DispatcherPid, Uid, RawInput) ->
     CommandContext = #command_context{
+        raw_input = RawInput,
         command_func = look_scene,
         dispatcher_pid = DispatcherPid
     },
@@ -58,13 +60,15 @@ exec(DispatcherPid, Uid) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec exec(DispatcherPid, Uid, TargetArgs) -> ok when
-    Uid :: player_fsm:uid(),
+-spec exec(DispatcherPid, Uid, RawInput, TargetArgs) -> ok when
+    Uid :: player_statem:uid(),
+    RawInput :: binary(),
     DispatcherPid :: pid(),
     TargetArgs :: binary().
-exec(DispatcherPid, Uid, TargetArgs) ->
-    {ok, TargetId, Sequence} = cm:parse_target_id(TargetArgs),
+exec(DispatcherPid, Uid, RawInput, TargetArgs) ->
+    {ok, TargetId, Sequence} = elib:parse_target_id(TargetArgs),
     CommandContext = #command_context{
+        raw_input = RawInput,
         command_func = being_look,
         dispatcher_pid = DispatcherPid,
         target_name = TargetId,
@@ -83,7 +87,7 @@ exec(DispatcherPid, Uid, TargetArgs) ->
 -spec being_look(CommandContext, State, StateName) -> {ok, UpdatedStateName, UpdatedState} when
     CommandContext :: #command_context{},
     State :: #player_state{},
-    StateName :: player_fsm:player_state_name(),
+    StateName :: player_statem:player_state_name(),
     UpdatedStateName :: StateName,
     UpdatedState :: State.
 being_look(
@@ -116,7 +120,7 @@ being_look(
     ok = cm:execute_command(SrcUid, UpdatedCommandContext),
 
     SceneMessage = [SrcName, {nls, under_look}, <<"\n">>],
-    UpdatedState = player_fsm:append_message_local(SceneMessage, scene, State),
+    UpdatedState = player_statem:append_message_local(SceneMessage, scene, State),
     {ok, StateName, UpdatedState};
 being_look(
     #command_context{
@@ -149,7 +153,7 @@ being_look(
 -spec feedback(CommandContext, State, StateName) -> {ok, UpdatedStateName, UpdatedState} when
     CommandContext :: #command_context{},
     State :: #player_state{},
-    StateName :: player_fsm:player_state_name(),
+    StateName :: player_statem:player_state_name(),
     UpdatedStateName :: StateName,
     UpdatedState :: State.
 feedback(
@@ -160,19 +164,19 @@ feedback(
     State,
     StateName
 ) ->
-    UpdatedState = player_fsm:do_response_content(State, TargetDescription, DispatcherPid),
+    UpdatedState = player_statem:do_response_content(State, TargetDescription, DispatcherPid),
     {ok, StateName, UpdatedState}.
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Display the current scene by response current scene info to player.
+%% Display the current scene by responding the current scene info back to player.
 %%
 %% @end
 %%--------------------------------------------------------------------
 -spec look_scene(CommandContext, State, StateName) -> {ok, UpdatedStateName, UpdatedState} when
     CommandContext :: #command_context{},
     State :: #player_state{},
-    StateName :: player_fsm:player_state_name(),
+    StateName :: player_statem:player_state_name(),
     UpdatedStateName :: StateName,
     UpdatedState :: State.
 look_scene(

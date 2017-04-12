@@ -17,8 +17,7 @@
 %% API
 -export([
     start_link/0,
-    new_npcs/1,
-    stop/0
+    new_npcs/1
 ]).
 
 %% gen_server callbacks
@@ -65,16 +64,6 @@ start_link() ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Stop server.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec stop() -> ok.
-stop() ->
-    gen_server:cast(?SERVER, stop).
-
-%%--------------------------------------------------------------------
-%% @doc
 %% Starts npc fsm as requirements of NpcSpecs.
 %% TODO: mark down npc uuids for reusable purpose, this is to prevent from growing memory size of atoms.
 %%
@@ -89,9 +78,6 @@ new_npcs(NpcsSpec) ->
     {SceneNpcsList, NpcsMap} = traverse_npcspec(NpcsSpec),
     gen_server:cast(?MODULE, {new_npcs, NpcsMap}),
     SceneNpcsList.
-
-%%update_npc_profile(UpdatedNpcProfileMap) ->
-%%    gen_server:cast(?MODULE, {update_npc_profile, UpdatedNpcProfileMap}).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -311,10 +297,37 @@ traverse_npcspec([{NpcId, Amount} | Tail], AccNpcsList, AccNpcsMap) ->
     OverallNpcsMap :: AccOverallNpcsMap.
 new_npc(0, _NpcBornProfile, AccNpcsList, AccOverallNpcsMap) ->
     {AccNpcsList, AccOverallNpcsMap};
-new_npc(Amount, NpcBornProfile, AccNpcsList, AccOverallNpcsMap) ->
-    NpcUid = cm:uuid(),
+new_npc(Amount, #npc_profile{ask_n_answers = RawAskNAnswers} = NpcBornProfile, AccNpcsList, AccOverallNpcsMap) ->
+    NpcUid = elib:uuid(),
+
+    %% =========Convert AskNAnswers from "nls_server:nls_object()" to "nls_server:value()" - START=========
+    AskNAnswers = case RawAskNAnswers of
+                      [] ->
+                          [];
+                      _HasAskNAnswers ->
+                          AffairNlsKeyList = lists:foldl(
+                              fun(#ask_n_answer{affair_nls_values = AffairNlsKey}, AccAffairNlsKeyList) ->
+                                  [AffairNlsKey | AccAffairNlsKeyList];
+                                  (IllegalAffair, _AccAffairNlsKeyList) ->
+                                      error_logger:error_msg("Illegal affair:~p~n", [IllegalAffair]),
+                                      throw(illegal_affair)
+                              end, [], RawAskNAnswers),
+
+                          AffairNlsValuesList = nls_server:get_nls_langs(AffairNlsKeyList),
+
+                          {ReturnAskNAnswers, []} = lists:foldl(
+                              fun(CurAskNAnswer, {AccAskNAnswers, [AffairNlsValues | OriAffairNlsValuesList]}) ->
+                                  {[CurAskNAnswer#ask_n_answer{
+                                      affair_nls_values = AffairNlsValues
+                                  } | AccAskNAnswers], OriAffairNlsValuesList}
+                              end, {[], AffairNlsValuesList}, RawAskNAnswers),
+                          ReturnAskNAnswers
+                  end,
+    %% =========Convert AskNAnswers from "nls_server:nls_object()" to "nls_server:value()" - END===========
+
     NpcProfile = NpcBornProfile#npc_profile{
-        npc_uid = NpcUid
+        npc_uid = NpcUid,
+        ask_n_answers = AskNAnswers
     },
     npc_fsm_sup:add_child(NpcProfile),
     SimpleNpc = npc_fsm:simple_npc(NpcProfile),

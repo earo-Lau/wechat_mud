@@ -9,7 +9,7 @@
 %%% @end
 %%% Created : 01. Nov 2015 6:12 PM
 %%%-------------------------------------------------------------------
--module(player_fsm_sup).
+-module(player_statem_sup).
 -author("shuieryin").
 
 -behaviour(supervisor).
@@ -17,9 +17,7 @@
 %% API
 -export([
     start_link/0,
-    add_child/2,
-    start/0,
-    stop/0
+    add_child/2
 ]).
 
 %% Supervisor callbacks
@@ -45,32 +43,12 @@ start_link() ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Starts the supervisor without link.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec start() -> supervisor:startlink_ret().
-start() ->
-    gen_server:start({local, ?SERVER}, supervisor, {{local, ?SERVER}, ?MODULE, []}, []).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Stop supervisor.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec stop() -> true.
-stop() ->
-    exit(whereis(?SERVER), normal).
-
-%%--------------------------------------------------------------------
-%% @doc
 %% Starts the supervisor
 %%
 %% @end
 %%--------------------------------------------------------------------
 -spec add_child(Uid, DispatcherPid) -> supervisor:startchild_ret() when
-    Uid :: player_fsm:uid(),
+    Uid :: player_statem:uid(),
     DispatcherPid :: pid().
 add_child(Uid, DispatcherPid) ->
     supervisor:start_child(?MODULE, [Uid, DispatcherPid]).
@@ -102,7 +80,7 @@ init([]) ->
     Shutdown = 2000,
     Type = worker,
 
-    ChildSpec = {player_fsm, {player_fsm, start_link, []}, Restart, Shutdown, Type, [player_fsm]},
+    ChildSpec = {player_statem, {player_statem, start_link, []}, Restart, Shutdown, Type, [player_statem]},
 
     {ok, {SupFlags, [ChildSpec]}}.
 

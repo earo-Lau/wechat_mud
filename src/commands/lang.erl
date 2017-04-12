@@ -13,7 +13,7 @@
 
 %% API
 -export([
-    exec/3,
+    exec/4,
     switch_lang/3
 ]).
 
@@ -35,12 +35,13 @@
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec exec(DispatcherPid, Uid, RawTargetLang) -> ok when
-    Uid :: player_fsm:uid(),
+-spec exec(DispatcherPid, Uid, RawInput, RawTargetLang) -> ok when
+    Uid :: player_statem:uid(),
+    RawInput :: binary(),
     RawTargetLang :: binary(),
     DispatcherPid :: pid().
-exec(DispatcherPid, Uid, RawTargetLang) ->
-    CurLang = player_fsm:get_lang(Uid),
+exec(DispatcherPid, Uid, RawInput, RawTargetLang) ->
+    CurLang = player_statem:get_lang(Uid),
     case RawTargetLang of
         <<"all">> ->
             nls_server:show_langs(DispatcherPid, CurLang);
@@ -48,13 +49,14 @@ exec(DispatcherPid, Uid, RawTargetLang) ->
             case nls_server:is_valid_lang(RawTargetLang) of
                 true ->
                     CommandContext = #command_context{
+                        raw_input = RawInput,
                         command_func = switch_lang,
                         command_args = binary_to_atom(RawTargetLang, utf8),
                         dispatcher_pid = DispatcherPid
                     },
                     cm:execute_command(Uid, CommandContext);
                 false ->
-                    player_fsm:response_content(Uid, [{nls, invalid_lang}, RawTargetLang, <<"\n\n">>, {nls, lang_help}], DispatcherPid)
+                    player_statem:response_content(Uid, [{nls, invalid_lang}, RawTargetLang, <<"\n\n">>, {nls, lang_help}], DispatcherPid)
             end
     end.
 
@@ -67,7 +69,7 @@ exec(DispatcherPid, Uid, RawTargetLang) ->
 -spec switch_lang(CommandContext, State, StateName) -> {ok, UpdatedStateName, UpdatedState} when
     CommandContext :: #command_context{},
     State :: #player_state{},
-    StateName :: player_fsm:player_state_name(),
+    StateName :: player_statem:player_state_name(),
     UpdatedStateName :: StateName,
     UpdatedState :: State.
 switch_lang(
@@ -83,7 +85,7 @@ switch_lang(
     StateName
 ) ->
     TargetLangMap = nls_server:lang_map(TargetLang),
-    UpdatedState = player_fsm:do_response_content(
+    UpdatedState = player_statem:do_response_content(
         State#player_state{lang_map = TargetLangMap},
         [{nls, lang_switched}],
         DispatcherPid

@@ -17,9 +17,7 @@
 %% API
 -export([
     start_link/0,
-    add_child/3,
-    start/0,
-    stop/0
+    add_child/3
 ]).
 
 %% Supervisor callbacks
@@ -43,33 +41,13 @@ start_link() ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Starts the supervisor without link.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec start() -> supervisor:startlink_ret().
-start() ->
-    gen_server:start({local, ?SERVER}, supervisor, {{local, ?SERVER}, ?MODULE, []}, []).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Stop supervisor.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec stop() -> true.
-stop() ->
-    exit(whereis(?SERVER), normal).
-
-%%--------------------------------------------------------------------
-%% @doc
 %% Add register_fsm
 %%
 %% @end
 %%--------------------------------------------------------------------
 -spec add_child(DispatcherPid, Uid, BornTypeInfoMap) -> supervisor:startchild_ret() when
     DispatcherPid :: pid(),
-    Uid :: player_fsm:uid(),
+    Uid :: player_statem:uid(),
     BornTypeInfoMap :: register_fsm:born_type_info_map().
 add_child(DispatcherPid, Uid, BornTypeInfoMap) ->
     supervisor:start_child(?MODULE, [DispatcherPid, Uid, BornTypeInfoMap]).

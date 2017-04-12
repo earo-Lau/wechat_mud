@@ -13,7 +13,7 @@
 
 %% API
 -export([
-    exec/2,
+    exec/3,
     show_hp/3
 ]).
 
@@ -30,11 +30,13 @@
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec exec(DispatcherPid, Uid) -> ok when
-    Uid :: player_fsm:uid(),
+-spec exec(DispatcherPid, Uid, RawInput) -> ok when
+    Uid :: player_statem:uid(),
+    RawInput :: binary(),
     DispatcherPid :: pid().
-exec(DispatcherPid, Uid) ->
+exec(DispatcherPid, Uid, RawInput) ->
     CommandContext = #command_context{
+        raw_input = RawInput,
         command_func = show_hp,
         dispatcher_pid = DispatcherPid
     },
@@ -49,7 +51,7 @@ exec(DispatcherPid, Uid) ->
 -spec show_hp(CommandContext, State, StateName) -> {ok, UpdatedStateName, UpdatedState} when
     CommandContext :: #command_context{},
     State :: #player_state{},
-    StateName :: player_fsm:player_state_name(),
+    StateName :: player_statem:player_state_name(),
     UpdatedStateName :: StateName,
     UpdatedState :: State.
 show_hp(
@@ -78,7 +80,7 @@ show_hp(
         {nls, defense_status, [Defense, MaxDefense]}, <<"\n">>,
         {nls, dexterity_status, [Dexterity, MaxDexDexterity]}, <<"\n">>
     ],
-    UpdatedState = player_fsm:do_response_content(State, Message, DispatcherPid),
+    UpdatedState = player_statem:do_response_content(State, Message, DispatcherPid),
     {ok, StateName, UpdatedState}.
 
 %%%===================================================================

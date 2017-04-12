@@ -6,25 +6,18 @@ language:
 env:
   global:
     - TRAVIS_CI=true
-    
+
 services:
   - redis-server
 
-#addons:
-#  apt:
-#    packages:
-#      - lynx
-
-#before_install:
-#  - ./rebar3 dialyzer
-
+#skip automated regression tests
 script:
-  - make
-  - make ct_analyze
+  - make install_rebar3
+  - make bc
 
 notifications:
   email:
     - shuieryin@gmail.com
 
 otp_release:
-  - 18.2
+  - 19.2

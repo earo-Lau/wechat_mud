@@ -1,41 +1,38 @@
-all: install_rebar3 ck build ct
+# all - for build and run test after a fresh clone
+all: install_rebar3 install
 
 install_rebar3:
 	@./config/install_rebar3.sh
 
-build:
-	@./config/build.sh
-
-ck: dialyzer edoc
-
-cu: clean_upgrade
-
-clean_upgrade: remove_appup upgrade
-
-remove_appup:
-	@rm -f ebin/*.appup
-
-upgrade:
-	@#bash -x
-	@./config/hcu.sh
+install:
+	@./config/rebar3 install
 
 run:
-	@./config/run.sh
+	@redis-server & ./_build/default/rel/wechat_mud/bin/wechat_mud console
+
+build:
+	@./config/rebar3 build
+
+hcu:
+	@./config/rebar3 hcu
 
 reset:
-	@git fetch --all
-	@git reset --hard origin/master
+	@./config/rebar3 reset
+
+app_deps:
+	@./_build/default/lib/recon/script/app_deps.erl; dot -T png -O app-deps.dot; rm -f app-deps.dot app-deps.dot.png
+
+crash_dump:
+	@./_build/default/lib/recon/script/erl_crashdump_analyzer.sh erl_crash.dump
+
+TS=1
+queue_fun:
+	@awk -v threshold=${TS} -f _build/default/lib/recon/script/queue_fun.awk erl_crash.dump
 
 ct:
-	@./config/rebar3 do ct -c, cover
-	@rm -f test/*.beam
-	@./config/test_coverage.sh
+	@./config/rebar3 do ct -c, cover -v
 
-ct_analyze:
-	@./config/show_ct_errors.sh
+ck:
+	@./config/rebar3 ck
 
-dialyzer:
-	@./config/rebar3 dialyzer
-
-edoc:
-	@./config/gen_edoc.sh
+bc: build ck

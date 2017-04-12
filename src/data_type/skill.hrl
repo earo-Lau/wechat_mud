@@ -15,14 +15,14 @@
 }).
 
 -record(skill, {
-    skill_id :: player_fsm:skill_id(),
+    skill_id :: player_statem:skill_id(),
     skill_seq :: integer(),
     skill_formula :: #skill_formula{},
     buff :: [term()] % generic term
 }).
 
 -record(perform_args, {
-    skill :: #skill{},
-    value_bindings :: erl_eval:bindings(),
-    perform_results :: [perform:perform_result()]
+    skill :: #skill{} | undefined,
+    value_bindings :: erl_eval:bindings() | undefined,
+    perform_results :: [perform:perform_result()] | undefined
 }).

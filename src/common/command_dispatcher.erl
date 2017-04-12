@@ -23,27 +23,30 @@
 -define(MAX_CONTENT_SIZE, 2048).
 -define(EMPTY_CONTENT, <<>>).
 -define(WECHAT_TOKEN, <<"wechat_mud">>).
+-define(AFFAIR_INPUT_DIGIT_SIZE, <<"2">>).
+-define(Get_lang(Uid), player_statem:get_lang(Uid)).
 
 -type get_param() :: string() | binary(). % generic string % generic binary
 -type post_param() :: binary(). % generic binary
 -type command() :: binary(). % generic binary
+-type return_content() :: nls_server:value() | {image, binary()} | [nls_server:value()] | no_response.
 
 -record(wechat_get_params, {
     signature :: get_param(),
     timestamp :: get_param(),
     nonce :: get_param(),
-    echostr :: get_param()
+    echostr :: get_param() | undefined
 }).
 
 -record(wechat_post_params, {
-    'Content' :: post_param(),
-    'CreateTime' :: post_param(),
-    'FromUserName' :: post_param(),
-    'MsgId' :: post_param(),
-    'MsgType' :: post_param(),
-    'ToUserName' :: post_param(),
-    'Event' :: post_param(),
-    'EventKey' :: post_param()
+    'Content' :: post_param() | undefined,
+    'CreateTime' :: post_param() | undefined,
+    'FromUserName' :: post_param() | undefined,
+    'MsgId' :: post_param() | undefined,
+    'MsgType' :: post_param() | undefined,
+    'ToUserName' :: post_param() | undefined,
+    'Event' :: post_param() | undefined,
+    'EventKey' :: post_param() | undefined
 }).
 
 %%%===================================================================
@@ -69,18 +72,20 @@
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec start(Req) -> iodata() when
-    Req :: cowboy_req:req().
+-spec start(Req) -> {Reply, UpdatedReq} when
+    Req :: cowboy_req:req(),
+    Reply :: iodata(),
+    UpdatedReq :: Req.
 start(Req) ->
     case cowboy_req:qs(Req) of
-        <<>> ->
+        ?EMPTY_CONTENT ->
             IsWechatDebug = common_server:is_wechat_debug(),
             case IsWechatDebug of
                 true ->
                     process_request(Req);
                 false ->
                     error_logger:error_msg("Validation params empty~n", []),
-                    ?EMPTY_CONTENT
+                    {?EMPTY_CONTENT, Req}
             end;
         HeaderParams ->
             #wechat_get_params{signature = Signature, timestamp = TimeStamp, nonce = Nonce, echostr = EchoStr} = gen_get_params(HeaderParams),
@@ -92,10 +97,10 @@ start(Req) ->
                             process_request(Req);
                         _EchoStr ->
                             error_logger:info_msg("Connectivity success~n", []),
-                            EchoStr
+                            {EchoStr, Req}
                     end;
                 false ->
-                    ?EMPTY_CONTENT
+                    {?EMPTY_CONTENT, Req}
             end
     end.
 
@@ -112,7 +117,7 @@ start(Req) ->
     Module :: module(),
     Function :: atom(), % generic atom
     Args :: [term()], % generic term
-    ReturnContent :: [nls_server:value()] | no_response.
+    ReturnContent :: return_content().
 pending_content(Module, Function, Args) ->
     Self = self(),
     FunctionArgs = [Self | Args],
@@ -125,7 +130,7 @@ pending_content(Module, Function, Args) ->
         {execed, Self, ReturnContent} ->
             ReturnContent
     after
-        1000 ->
+        2000 ->
             no_response
     end.
 
@@ -137,7 +142,7 @@ pending_content(Module, Function, Args) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec return_content(DispatcherPid, ReturnContent) -> ok when
-    ReturnContent :: binary() | [binary()],
+    ReturnContent :: return_content(),
     DispatcherPid :: pid().
 return_content(DispatcherPid, ReturnContent) ->
     DispatcherPid ! {execed, DispatcherPid, ReturnContent},
@@ -203,70 +208,77 @@ validate_signature([OriginalSignatureBin | ParamList] = OriginalParams) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec process_request(Req) -> FormattedResponseContent when
+-spec process_request(Req) -> {FormattedResponseContent, UpdatedReq} when
     Req :: cowboy_req:req(),
-    FormattedResponseContent :: binary().
+    FormattedResponseContent :: binary(),
+    UpdatedReq :: Req.
 process_request(Req) ->
-    case parse_xml_request(Req) of
-        parse_failed ->
-            error_logger:info_msg("Parse xml request failed:~tp~n", [Req]),
-            ?EMPTY_CONTENT;
-        #wechat_post_params{
-            'Content' = RawInputBin,
-            'ToUserName' = PlatformId,
-            'FromUserName' = UidBin
-        } = ReqParams ->
-            error_logger:info_msg("User input:~tp~n", [RawInputBin]),
+    {ReqParams, UpdatedReq} = parse_xml_request(Req),
+    FinalReply =
+        case ReqParams of
+            parse_failed ->
+                error_logger:info_msg("Parse xml request failed:~tp~n", [Req]),
+                ?EMPTY_CONTENT;
+            #wechat_post_params{
+                'Content' = RawInputBin,
+                'ToUserName' = PlatformId,
+                'FromUserName' = UidBin
+                %'MsgId' = MsgId
+            } = ReqParams ->
+                error_logger:info_msg("User input:~tp~n", [RawInputBin]),
 
-            Uid = binary_to_atom(UidBin, utf8),
-            {RawInput, FuncExec} = gen_action_from_message_type(ReqParams),
-            ReturnContent =
-                case whereis(Uid) of % login_server:is_uid_logged_in(Uid)
-                    undefined ->
-                        case whereis(register_fsm:register_server_name(Uid)) of % login_server:is_in_registration(Uid)
-                            undefined ->
-                                case login_server:is_uid_registered(Uid) of
-                                    false ->
-                                        pending_content(login_server, register_uid, [Uid]);
-                                    true ->
-                                        if
-                                            <<"login">> == RawInput orelse <<"rereg">> == RawInput orelse subscribe == RawInput ->
-                                                FuncExec(Uid);
-                                            true ->
-                                                nls_server:get_nls_content([{nls, please_login}], zh)
-                                        end
-                                end;
-                            _RegisterPid ->
-                                if
-                                    unsubscribe == RawInput ->
-                                        register_fsm:stop(Uid),
-                                        no_response;
-                                    true ->
-                                        pending_content(register_fsm, input, [Uid, RawInput])
-                                end
-                        end;
-                    _PlayerPid ->
-                        FuncExec(Uid)
-                end,
+                Uid = binary_to_atom(UidBin, utf8),
+                {RawInput, FuncExec} = gen_action_from_message_type(ReqParams),
+                ReturnContent =
+                    case whereis(Uid) of % login_server:is_uid_logged_in(Uid)
+                        undefined ->
+                            case whereis(register_fsm:register_server_name(Uid)) of % login_server:is_in_registration(Uid)
+                                undefined ->
+                                    case login_server:is_uid_registered(Uid) of
+                                        false ->
+                                            pending_content(login_server, register_uid, [Uid]);
+                                        true ->
+                                            if
+                                                <<"login">> == RawInput orelse <<"rereg">> == RawInput orelse subscribe == RawInput ->
+                                                    FuncExec(Uid);
+                                                true ->
+                                                    nls_server:get_nls_content([{nls, please_login}], zh)
+                                            end
+                                    end;
+                                _RegisterPid ->
+                                    if
+                                        unsubscribe == RawInput ->
+                                            register_fsm:stop(Uid),
+                                            no_response;
+                                        true ->
+                                            pending_content(register_fsm, input, [Uid, RawInput])
+                                    end
+                            end;
+                        _PlayerPid ->
+                            FuncExec(Uid)
+                    end,
 
-            Response =
-                case ReturnContent of
-                    no_response ->
-                        <<>>;
-                    _ReturnContent ->
-                        try
-                            ReturnContentBinary = list_to_binary(lists:flatten(cm:remove_last_newline(ReturnContent))),
-                            spawn(cm, pp, [ReturnContentBinary]),
-                            compose_xml_response(UidBin, PlatformId, ReturnContentBinary)
-                        catch
-                            Type:Reason ->
-                                error_logger:error_msg("Invalid Content:~p~n", [ReturnContent]),
-                                error_logger:error_msg("Type:~p~nReason:~p~nStackTrace:~p~n", [Type, Reason, erlang:get_stacktrace()]),
-                                <<>>
+                Response =
+                    try
+                        case ReturnContent of
+                            no_response ->
+                                <<>>;
+                            {image, ImageUrl} ->
+                                compose_image_response(UidBin, PlatformId, ImageUrl);
+                            _ReturnContent ->
+                                ReturnContentBinary = list_to_binary(lists:flatten(elib:remove_last_newline(ReturnContent))),
+                                spawn(elib, pp, [ReturnContentBinary]),
+                                compose_text_response(UidBin, PlatformId, ReturnContentBinary)
                         end
-                end,
-            Response
-    end.
+                    catch
+                        Type:Reason ->
+                            error_logger:error_msg("Invalid Content:~p~n", [ReturnContent]),
+                            error_logger:error_msg("Type:~p~nReason:~p~nStackTrace:~p~n", [Type, Reason, erlang:get_stacktrace()]),
+                            <<>>
+                    end,
+                Response
+        end,
+    {FinalReply, UpdatedReq}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -313,7 +325,7 @@ gen_action_from_message_type(
                 <<"unsubscribe">> ->
                     {unsubscribe,
                         fun(Uid) ->
-                            handle_input(Uid, <<"logout">>, []),
+                            handle_input(Uid, <<"logout">>),
                             no_response
                         end};
                 _Event ->
@@ -324,15 +336,16 @@ gen_action_from_message_type(
             end;
         <<"text">> ->
             RawInput = ReqParams#wechat_post_params.'Content',
-            [ModuleNameBin | RawCommandArgs] = binary:split(RawInput, <<" ">>),
-            {RawInput,
+            {
+                RawInput,
                 fun(Uid) ->
-                    handle_input(Uid, ModuleNameBin, RawCommandArgs)
-                end};
+                    handle_input(Uid, RawInput)
+                end
+            };
         _MsgType ->
             {<<>>,
                 fun(Uid) ->
-                    nls_server:get_nls_content([{nls, message_type_not_support}], player_fsm:get_lang(Uid))
+                    nls_server:get_nls_content([{nls, message_type_not_support}], ?Get_lang(Uid))
                 end}
     end.
 
@@ -354,69 +367,74 @@ gen_action_from_message_type(
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec handle_input(Uid, ModuleNameBin, RawCommandArgs) -> ReturnContent when
-    Uid :: player_fsm:uid(),
-    ModuleNameBin :: binary(),
-    RawCommandArgs :: [binary()],
+-spec handle_input(Uid, RawInput) -> ReturnContent when
+    Uid :: player_statem:uid(),
+    RawInput :: binary(),
     ReturnContent :: [nls_server:value()].
-handle_input(Uid, ModuleNameBin, RawCommandArgs) ->
-    RawModuleName = parse_raw_command(ModuleNameBin),
-
-    CommandInfo =
-        case is_command_exist(RawModuleName) of
-            true ->
-                {binary_to_atom(RawModuleName, utf8), RawCommandArgs};
-            false ->
-                case direction:parse_direction(RawModuleName) of
-                    undefined ->
-                        invalid_command;
-                    Direction ->
-                        direction:module_info(),
-                        {direction, [Direction]}
-                end
-        end,
-
-    case CommandInfo of
-        {ModuleName, CommandArgs} ->
-            Arity = length(CommandArgs),
-            Args = [Uid | CommandArgs],
-
-            ModuleName:module_info(), % call module_info in order to make function_exported works
-            case erlang:function_exported(ModuleName, exec, Arity + 2) of
-                true ->
-                    pending_content(ModuleName, exec, Args);
-                false ->
-                    nls_server:get_nls_content([{nls, invalid_argument}, CommandArgs, <<"\n\n">>, {nls, list_to_atom(binary_to_list(RawModuleName) ++ "_help")}], player_fsm:get_lang(Uid))
-            end;
-
-        invalid_command ->
-            nls_server:get_nls_content([{nls, invalid_command}, ModuleNameBin], player_fsm:get_lang(Uid))
+handle_input(Uid, RawInput) ->
+    MatchStatus = re:run(RawInput, <<"^[0-9]{1,", ?AFFAIR_INPUT_DIGIT_SIZE/binary, "}">>),
+    case MatchStatus of
+        nomatch ->
+            handle_normal_input(Uid, RawInput);
+        {match, _Match} ->
+            AffairName = player_statem:affair_name(Uid),
+            % error_logger:info_msg("AffairName:~p~n", [AffairName]),
+            case AffairName of
+                undefined ->
+                    handle_normal_input(Uid, RawInput);
+                _InAffair ->
+                    pending_content(player_statem, handle_affair_input, [Uid, RawInput])
+            end
     end.
 
 %%--------------------------------------------------------------------
 %% @doc
 %% This function is called after content is returned from pending_content/3,
-%% it construct xml response only when the return content is not empty.
+%% it construct IMAGE response only when the return content is not empty.
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec compose_xml_response(UidBin, PlatformIdBin, ContentBin) -> XmlContent when
+-spec compose_image_response(UidBin, PlatformIdBin, ImageId) -> XmlContent when
+    UidBin :: binary(),
+    PlatformIdBin :: binary(),
+    ImageId :: binary(),
+    XmlContent :: binary().
+compose_image_response(UidBin, PlatformIdBin, ImageId) ->
+    TimestampBin = integer_to_binary(elib:timestamp()),
+    Xml = <<"<xml>
+        <ToUserName><![CDATA[", UidBin/binary, "]]></ToUserName>
+        <FromUserName><![CDATA[", PlatformIdBin/binary, "]]></FromUserName>
+        <CreateTime>", TimestampBin/binary, "</CreateTime>
+        <MsgType><![CDATA[image]]></MsgType>
+        <Image>
+            <MediaId><![CDATA[", ImageId/binary, "]]></MediaId>
+        </Image>
+    </xml>">>,
+
+    error_logger:info_msg("ImageXmlResponse:~p~n", [Xml]),
+    Xml.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% This function is called after content is returned from pending_content/3,
+%% it construct TEXT response only when the return content is not empty.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec compose_text_response(UidBin, PlatformIdBin, ContentBin) -> XmlContent when
     UidBin :: binary(),
     PlatformIdBin :: binary(),
     ContentBin :: binary(),
     XmlContent :: binary().
-compose_xml_response(UidBin, PlatformIdBin, ContentBin) ->
-    XmlContentList = [<<"<xml><Content><![CDATA[">>,
-        ContentBin,
-        <<"]]></Content><ToUserName><![CDATA[">>,
-        UidBin,
-        <<"]]></ToUserName><FromUserName><![CDATA[">>,
-        PlatformIdBin,
-        <<"]]></FromUserName><CreateTime>">>,
-        integer_to_binary(cm:timestamp()),
-        <<"</CreateTime><MsgType><![CDATA[text]]></MsgType></xml>">>],
-
-    list_to_binary(XmlContentList).
+compose_text_response(UidBin, PlatformIdBin, ContentBin) ->
+    TimestampBin = integer_to_binary(elib:timestamp()),
+    <<"<xml>
+        <Content><![CDATA[", ContentBin/binary, "]]></Content>
+        <ToUserName><![CDATA[", UidBin/binary, "]]></ToUserName>
+        <FromUserName><![CDATA[", PlatformIdBin/binary, "]]></FromUserName>
+        <CreateTime>", TimestampBin/binary, "</CreateTime>
+        <MsgType><![CDATA[text]]></MsgType>
+    </xml>">>.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -424,18 +442,22 @@ compose_xml_response(UidBin, PlatformIdBin, ContentBin) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec parse_xml_request(Req) -> ReqParams when
+-spec parse_xml_request(Req) -> {ReqParams, UpdatedReq} when
     Req :: cowboy_req:req(),
-    ReqParams :: #wechat_post_params{} | parse_failed.
+    ReqParams :: #wechat_post_params{} | parse_failed,
+    UpdatedReq :: Req.
 parse_xml_request(Req) ->
-    {ok, Message, _UpdatedReq} = cowboy_req:body(Req),
-    case Message of
-        <<>> ->
-            parse_failed;
-        _Message ->
-            {ok, {"xml", [], Params}, _UpdatedOptions} = erlsom:simple_form(Message),
-            unmarshall_params(Params, #wechat_post_params{})
-    end.
+    {ok, Message, UpdatedReq} = cowboy_req:body(Req),
+    % io:format("Message:~p~n", [Message]),
+    ReqParams =
+        case Message of
+            <<>> ->
+                parse_failed;
+            _Message ->
+                {ok, {"xml", [], Params}, _UpdatedOptions} = erlsom:simple_form(Message),
+                unmarshall_params(Params, #wechat_post_params{})
+        end,
+    {ReqParams, UpdatedReq}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -487,72 +509,12 @@ unmarshall_params([{_Other, [], [_ParamValue]} | Tail], ParamsRecord) ->
 %%--------------------------------------------------------------------
 -spec gen_get_params(binary()) -> #wechat_get_params{}.
 gen_get_params(HeaderParams) ->
-    gen_get_params(size(HeaderParams) - 1, HeaderParams, #{}).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Implementation function for gen_get_params/1.
-%% @see gen_get_params/1.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec gen_get_params(Pos, Bin, AccParamsMap) -> Params when
-    Pos :: integer(), % generic integer
-    Bin :: binary(),
-    AccParamsMap :: map(), % generic map
-    Params :: #wechat_get_params{}.
-gen_get_params(
-    -1,
-    _Bin,
     #{
         signature := Signature,
         timestamp := TimeStamp,
         nonce := Nonce
-    } = ParamsMap
-) ->
-    {wechat_get_params, Signature, TimeStamp, Nonce, maps:get(echostr, ParamsMap, undefined)};
-gen_get_params(Pos, Bin, ParamsMap) ->
-    {ValueBin, CurPosByValue} = gen_get_param_value(binary:at(Bin, Pos), [], Pos - 1, Bin),
-    {KeyBin, CurPosByKey} = gen_req_param_key(binary:at(Bin, CurPosByValue), [], CurPosByValue - 1, Bin),
-    gen_get_params(CurPosByKey, Bin, maps:put(binary_to_atom(KeyBin, unicode), ValueBin, ParamsMap)).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% This function generates request raw request param keys.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec gen_req_param_key(CurByte, KeyBinList, Pos, SrcBin) -> {KeyBin, CurPos} when
-    CurByte :: byte(),
-    KeyBinList :: [CurByte],
-    Pos :: integer(), % generic integer
-    SrcBin :: binary(),
-    KeyBin :: SrcBin,
-    CurPos :: Pos.
-gen_req_param_key($&, KeyBinList, Pos, _SrcBin) ->
-    {list_to_binary(KeyBinList), Pos};
-gen_req_param_key(CurByte, KeyBinList, -1, _SrcBin) ->
-    {list_to_binary([CurByte | KeyBinList]), -1};
-gen_req_param_key(CurByte, KeyBinList, Pos, SrcBin) ->
-    gen_req_param_key(binary:at(SrcBin, Pos), [CurByte | KeyBinList], Pos - 1, SrcBin).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% This function generates request raw request param values.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec gen_get_param_value(CurByte, ValueBinList, Pos, SrcBin) -> {ValueBin, CurPos} when
-    CurByte :: byte(),
-    ValueBinList :: [CurByte],
-    Pos :: integer(), % generic integer
-    SrcBin :: binary(),
-    ValueBin :: SrcBin,
-    CurPos :: Pos.
-gen_get_param_value($=, ValueBinList, Pos, _SrcBin) ->
-    {list_to_binary(ValueBinList), Pos};
-gen_get_param_value(CurByte, ValueBinList, Pos, SrcBin) ->
-    gen_get_param_value(binary:at(SrcBin, Pos), [CurByte | ValueBinList], Pos - 1, SrcBin).
+    } = ParamsMap = elib:gen_get_params(HeaderParams),
+    {wechat_get_params, Signature, TimeStamp, Nonce, maps:get(echostr, ParamsMap, undefined)}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -570,7 +532,7 @@ execute_command(Module, Function, [DispatcherPid, Uid | CommandArgs] = FunctionA
         apply(Module, Function, FunctionArgs)
     catch
         Type:Reason ->
-            ok = player_fsm:response_content(Uid, [{nls, invalid_argument}, CommandArgs, <<"\n\n">>, {nls, list_to_atom(atom_to_list(Module) ++ "_help")}], DispatcherPid),
+            ok = player_statem:response_content(Uid, [{nls, invalid_argument}, CommandArgs, <<"\n\n">>, {nls, list_to_atom(atom_to_list(Module) ++ "_help")}], DispatcherPid),
             error_logger:error_msg("Type:~p~nReason:~p~nStackTrace:~p~n", [Type, Reason, erlang:get_stacktrace()]),
             throw(Reason)
     end.
@@ -602,6 +564,57 @@ is_command_exist(<<"login">>) -> true;
 is_command_exist(<<"logout">>) -> true;
 is_command_exist(<<"rereg">>) -> true;
 is_command_exist(<<"hp">>) -> true;
-is_command_exist(<<"perform">>) -> true;
 is_command_exist(<<"attack">>) -> true;
-is_command_exist(_InvalidCommand) -> false.
+is_command_exist(<<"ask">>) -> true;
+is_command_exist(SpecialHandling) ->
+    if
+        SpecialHandling == <<"perform">> ->
+            true;
+        true ->
+            false
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Handle normal input.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec handle_normal_input(Uid, RawInput) -> ReturnContent :: [nls_server:value()] when
+    Uid :: player_statem:uid(),
+    RawInput :: binary().
+handle_normal_input(Uid, RawInput) ->
+    [ModuleNameBin | RawCommandArgs] = binary:split(RawInput, <<" ">>),
+
+    RawModuleName = parse_raw_command(ModuleNameBin),
+
+    CommandInfo =
+        case is_command_exist(RawModuleName) of
+            true ->
+                {binary_to_atom(RawModuleName, utf8), RawCommandArgs};
+            false ->
+                case direction:parse_direction(RawModuleName) of
+                    undefined ->
+                        invalid_command;
+                    Direction ->
+                        direction:module_info(),
+                        {direction, [Direction]}
+                end
+        end,
+
+    case CommandInfo of
+        {ModuleName, CommandArgs} ->
+            Arity = length(CommandArgs),
+            Args = [Uid, RawInput | CommandArgs],
+
+            ModuleName:module_info(), % call module_info in order to make function_exported works
+            case erlang:function_exported(ModuleName, exec, Arity + 3) of
+                true ->
+                    pending_content(ModuleName, exec, Args);
+                false ->
+                    nls_server:get_nls_content([{nls, invalid_argument}, CommandArgs, <<"\n\n">>, {nls, list_to_atom(binary_to_list(RawModuleName) ++ "_help")}], ?Get_lang(Uid))
+            end;
+
+        invalid_command ->
+            nls_server:get_nls_content([{nls, invalid_command}, ModuleNameBin], ?Get_lang(Uid))
+    end.
